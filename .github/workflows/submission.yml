@@ -1,29 +1,30 @@
-# Validate a submitted map and merge it, with nobody in the loop.
+# Accept a submitted map, a withdrawal, or a vote - with nobody in the loop.
 #
 # ---------------------------------------------------------------------------
-# WHY pull_request_target, AND WHY THAT IS NOT THE USUAL MISTAKE
+# THE WORKFLOW IS THE ONLY THING THAT EVER WRITES TO main
 # ---------------------------------------------------------------------------
 #
-# A submission comes from a fork, and a `pull_request` run from a fork gets a
-# read-only token - so it can check but never merge, which defeats the point.
-# `pull_request_target` gets a write token, and the well-known way to get that
-# wrong is to check out the fork's code and run it: the fork then executes with
-# a token that can write to this repository.
+# The pull request is a PROPOSAL, not a merge. Nothing from it is merged; the
+# workflow checks it, then writes the accepted end state to main itself and
+# closes the pull request. So main only ever contains bytes this workflow put
+# there, and "what was reviewed" and "what landed" cannot drift apart.
 #
-# So this workflow NEVER RUNS ANYTHING FROM THE SUBMISSION.
+# That is also what makes the two fields a submitter must never control -
+# `submitter` (ownership) and the vote tally - safe: they are stamped here,
+# after the check, on the way to main.
 #
-#   * It checks out THIS repository's base branch, and builds the validator
-#     from the base branch's own sources. A submission that could replace the
-#     validator would only have to submit a validator that says yes.
-#   * From the fork it takes DATA FILES ONLY - index.json and maps/** - with an
-#     explicit sparse fetch. No workflow, no script, no tool, nothing that can
-#     execute.
-#   * check_submission.py then refuses anything whose diff touches a path
-#     outside those two, so a submission cannot even add a file that a LATER
-#     workflow might run.
+# WHY pull_request_target, AND WHY IT IS NOT THE USUAL MISTAKE. A fork's
+# `pull_request` run gets a read-only token, so it could check but never write,
+# which defeats the point. `pull_request_target` gets a write token, and the
+# classic way to get that wrong is to check out the fork's code and RUN it.
+# This never runs anything from the submission:
 #
-# The merge is `--squash --auto`, so branch protection still applies if it is
-# ever turned on.
+#   * the validator and every script come from THIS repository's base branch -
+#     a submission that could replace the validator would only have to submit
+#     one that says yes;
+#   * from the fork it takes DATA FILES ONLY, by explicit path;
+#   * and check_submission.py refuses any diff touching anything else, so a
+#     submission cannot even add a file a LATER workflow might run.
 
 name: submission
 
@@ -32,70 +33,89 @@ on:
     paths:
       - 'index.json'
       - 'maps/**'
+      - 'votes/**'
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: submission-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: submission            # one writer to main at a time, ever
+  cancel-in-progress: false
 
 jobs:
-  check:
+  handle:
     runs-on: ubuntu-latest
     steps:
-      # OURS. The base branch, with the tools and the allowlist.
       - name: check out this repository (not the submission)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: main
           fetch-depth: 0
 
       - name: build the validator from OUR sources
         run: |
           g++ -O2 -Wall -o /tmp/validate tools/validate_cli.cpp -Itools
           test -f kit_paths.txt
+          cp tools/check_submission.py tools/apply_submission.py /tmp/
 
-      # THEIRS. Data files only, and nothing else is allowed to exist.
-      - name: take the submission's data files
+      - name: take the submission's data files, and nothing else
         env:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
           HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
+          BASE_SHA:  ${{ github.event.pull_request.base.sha }}
         run: |
           git remote add submitter "$HEAD_REPO"
-          git fetch --no-tags --depth=1 submitter "$HEAD_SHA"
-          git checkout "$HEAD_SHA" -- index.json maps || true
-          # Anything the submission added outside those two paths would have
-          # been left behind by that checkout, so say so loudly rather than
-          # quietly ignoring it.
-          git diff --name-only "${{ github.event.pull_request.base.sha }}"...\
-            "$HEAD_SHA" > /tmp/touched.txt
-          if grep -vE '^(index\.json|maps/)' /tmp/touched.txt; then
-            echo "::error::a submission may only touch index.json and maps/"
+          git fetch --no-tags --depth=50 submitter "$HEAD_SHA"
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" \
+               | grep -vE '^(index\.json|maps/|votes/)' ; then
+            echo "::error::a submission may only touch index.json, maps/ and votes/"
             exit 1
           fi
+          git checkout "$HEAD_SHA" -- index.json 2>/dev/null || true
+          git checkout "$HEAD_SHA" -- maps       2>/dev/null || true
+          git checkout "$HEAD_SHA" -- votes      2>/dev/null || true
+          # A deletion is not carried by `git checkout -- path`, so apply the
+          # removals explicitly rather than silently ignoring them.
+          git diff --name-status "$BASE_SHA...$HEAD_SHA" \
+            | awk '$1=="D"{print $2}' | while read -r f; do rm -f "$f"; done
+          find maps votes -type d -empty -delete 2>/dev/null || true
 
       - name: check it
-        run: |
-          python3 tools/check_submission.py \
-            "${{ github.event.pull_request.base.sha }}" /tmp/validate kit_paths.txt
-
-      - name: merge it
-        if: success()
         env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LOGIN:    ${{ github.event.pull_request.user.login }}
+        run: python3 /tmp/check_submission.py "$BASE_SHA" /tmp/validate kit_paths.txt "$LOGIN"
+
+      - name: stamp the owner, recount the votes, and write it to main
+        env:
+          LOGIN: ${{ github.event.pull_request.user.login }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
-          gh pr merge --squash --auto --delete-branch \
-            "${{ github.event.pull_request.number }}"
+          python3 /tmp/apply_submission.py "$LOGIN"
+          git config user.name  "omd2forever-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -A index.json maps votes
+          if git diff --cached --quiet; then
+            echo "nothing to write"
+          else
+            git commit -m "submission from @$LOGIN (#$PR)"
+            git push origin HEAD:main
+          fi
+          gh pr comment "$PR" --body "Accepted and published. Nothing of this
+            branch was merged - the check passed and the result was written to
+            main directly, which is why the tally and the submitter field are
+            not yours to set."
+          gh pr close "$PR" --delete-branch || gh pr close "$PR"
 
       - name: say why not
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
-          gh pr comment "${{ github.event.pull_request.number }}" --body \
-            "This map was not accepted. The check log above says which rule it
-             broke. Nothing personal and nothing manual - the same check runs
-             on every submission, and the game runs the same validator before
-             it installs anything."
+          gh pr comment "$PR" --body "This submission was not accepted. The log
+            above names the rule it broke. Nothing personal and nothing manual -
+            the same check runs on everything, and the game runs the same
+            validator again before it installs anything."
