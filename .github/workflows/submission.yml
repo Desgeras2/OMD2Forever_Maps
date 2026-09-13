@@ -1,0 +1,101 @@
+# Validate a submitted map and merge it, with nobody in the loop.
+#
+# ---------------------------------------------------------------------------
+# WHY pull_request_target, AND WHY THAT IS NOT THE USUAL MISTAKE
+# ---------------------------------------------------------------------------
+#
+# A submission comes from a fork, and a `pull_request` run from a fork gets a
+# read-only token - so it can check but never merge, which defeats the point.
+# `pull_request_target` gets a write token, and the well-known way to get that
+# wrong is to check out the fork's code and run it: the fork then executes with
+# a token that can write to this repository.
+#
+# So this workflow NEVER RUNS ANYTHING FROM THE SUBMISSION.
+#
+#   * It checks out THIS repository's base branch, and builds the validator
+#     from the base branch's own sources. A submission that could replace the
+#     validator would only have to submit a validator that says yes.
+#   * From the fork it takes DATA FILES ONLY - index.json and maps/** - with an
+#     explicit sparse fetch. No workflow, no script, no tool, nothing that can
+#     execute.
+#   * check_submission.py then refuses anything whose diff touches a path
+#     outside those two, so a submission cannot even add a file that a LATER
+#     workflow might run.
+#
+# The merge is `--squash --auto`, so branch protection still applies if it is
+# ever turned on.
+
+name: submission
+
+on:
+  pull_request_target:
+    paths:
+      - 'index.json'
+      - 'maps/**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: submission-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # OURS. The base branch, with the tools and the allowlist.
+      - name: check out this repository (not the submission)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      - name: build the validator from OUR sources
+        run: |
+          g++ -O2 -Wall -o /tmp/validate tools/validate_cli.cpp -Itools
+          test -f kit_paths.txt
+
+      # THEIRS. Data files only, and nothing else is allowed to exist.
+      - name: take the submission's data files
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
+          HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
+        run: |
+          git remote add submitter "$HEAD_REPO"
+          git fetch --no-tags --depth=1 submitter "$HEAD_SHA"
+          git checkout "$HEAD_SHA" -- index.json maps || true
+          # Anything the submission added outside those two paths would have
+          # been left behind by that checkout, so say so loudly rather than
+          # quietly ignoring it.
+          git diff --name-only "${{ github.event.pull_request.base.sha }}"...\
+            "$HEAD_SHA" > /tmp/touched.txt
+          if grep -vE '^(index\.json|maps/)' /tmp/touched.txt; then
+            echo "::error::a submission may only touch index.json and maps/"
+            exit 1
+          fi
+
+      - name: check it
+        run: |
+          python3 tools/check_submission.py \
+            "${{ github.event.pull_request.base.sha }}" /tmp/validate kit_paths.txt
+
+      - name: merge it
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge --squash --auto --delete-branch \
+            "${{ github.event.pull_request.number }}"
+
+      - name: say why not
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --body \
+            "This map was not accepted. The check log above says which rule it
+             broke. Nothing personal and nothing manual - the same check runs
+             on every submission, and the game runs the same validator before
+             it installs anything."
