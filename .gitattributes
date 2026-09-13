@@ -1,0 +1,9 @@
+# EVERY FILE HERE IS CONTENT-ADDRESSED, SO NOTHING MAY BE REWRITTEN.
+#
+# git's line-ending normalisation turned every CRLF in a published map into a
+# LF, which changed the bytes, which broke the SHA-256 the index had already
+# recorded - so a map downloaded fine, hashed differently, and was refused.
+#
+# "-text" tells git these are opaque bytes. It must stay that way for as long
+# as maps are named by their hash, which is forever.
+* -text
