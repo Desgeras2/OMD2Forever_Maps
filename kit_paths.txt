@@ -4,6 +4,9 @@
 # These are NAMES ONLY. No game data is in this file.
 # A line starting with @ is a marker; the editor may append #N to
 # one to keep several of the same marker apart.
+#mobs=32
+#flyers=27,28,29,30,31
+#sappers=6,7
 art\castle\Floor\pathway_cap.vmesh
 art\castle\Floor\pathway_outcorner.vmesh
 art\castle\Floor\pathway_straight.vmesh

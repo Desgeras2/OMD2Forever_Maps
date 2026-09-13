@@ -35,7 +35,7 @@ BASE, VALIDATE, KIT = sys.argv[1], sys.argv[2], sys.argv[3]
 # anything that needs ownership is refused rather than assumed.
 LOGIN = (sys.argv[4] if len(sys.argv) > 4 else "").strip()
 
-ALLOWED_FILES = {"map.delve", "map.placements", "thumb.bc1"}
+ALLOWED_FILES = {"map.delve", "map.placements", "map.waves", "thumb.bc1"}
 MAX_MAP_BYTES = 4 * 1024 * 1024
 # One fixed length, always: 8 bytes of magic plus 18432 of BC1. A file that
 # is any other size is not one of our thumbnails. See omd1_thumbfmt.h for
@@ -54,6 +54,37 @@ def sha256(path):
         for c in iter(lambda: f.read(1 << 16), b""):
             h.update(c)
     return h.hexdigest()
+
+
+def kit_flag(name):
+    for ln in io.open(KIT, encoding="utf-8"):
+        if ln.startswith("#%s=" % name):
+            v = ln.split("=", 1)[1].strip()
+            return set(int(x) for x in v.split(",") if x.strip())
+    return set()
+
+
+def wave_summary(path):
+    # Recomputed here from the file, never read from the row: the row is what
+    # the submitter wrote, and this is what the file actually says.
+    fly, sap = kit_flag("flyers"), kit_flag("sappers")
+    gold = par = count = has_fly = has_sap = 0
+    for ln in io.open(path, encoding="utf-8"):
+        ln = ln.strip()
+        try:
+            if ln.startswith("gold="): gold = int(ln[5:])
+            elif ln.startswith("par="): par = int(ln[4:])
+            elif ln.startswith("wavex="):
+                count += 1
+                for pair in ln[6:].split("|")[4:]:
+                    mob, _, n = pair.partition(",")
+                    if n and int(n) > 0:
+                        if int(mob) in fly: has_fly = 1
+                        if int(mob) in sap: has_sap = 1
+        except ValueError:
+            pass     # the validator has the final word on malformed lines
+    return {"gold": gold, "par": par, "wavecount": count,
+            "flyers": has_fly, "sappers": has_sap}
 
 
 def git(*args):
@@ -169,7 +200,23 @@ if "add" in kinds:
 
         # THE FOLDER NAME HAS TO BE THE CONTENT, or a folder could be named
         # after one map and hold a different one.
-        if hashlib.sha256((d_sha + p_sha).encode("ascii")).hexdigest() != mid:
+        waves = os.path.join(folder, "map.waves")
+        w_sha = sha256(waves) if os.path.isfile(waves) else ""
+        if w_sha and row.get("waves") != w_sha:
+            bad("maps/%s: map.waves is not the file the row names" % mid[:16])
+        if not w_sha and row.get("waves"):
+            bad("maps/%s: the row names a wave file that is not there" % mid[:16])
+        if w_sha:
+            truth = wave_summary(waves)
+            for key, val in truth.items():
+                if row.get(key) != val:
+                    bad("maps/%s: the row says %s=%r but the waves say %r"
+                        % (mid[:16], key, row.get(key), val))
+
+        # THE ID RULE: the hash of the file hashes, with the waves included when
+        # there are any, so two maps that differ only in their waves never share
+        # a folder.
+        if hashlib.sha256((d_sha + p_sha + w_sha).encode("ascii")).hexdigest() != mid:
             bad("maps/%s is not named after what is in it" % mid[:16])
 
         thumb = os.path.join(folder, "thumb.bc1")
@@ -195,7 +242,8 @@ if "add" in kinds:
         if not isinstance(players, int) or not (1 <= players <= 16):
             bad("maps/%s has a player count outside 1-16" % mid[:16])
 
-        r = subprocess.run([VALIDATE, delve, place, KIT], capture_output=True, text=True)
+        r = subprocess.run([VALIDATE, delve, place, KIT] + ([waves] if w_sha else []),
+                           capture_output=True, text=True)
         if r.returncode != 0:
             bad("maps/%s: %s" % (mid[:16], (r.stdout or "").strip().replace("\n", " ")[:200]))
         else:
