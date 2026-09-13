@@ -1,1 +1,14 @@
-{ "format": 1, "maps": [] }
+{
+ "format": 1,
+ "maps": [
+  {
+   "author": "Desgeras",
+   "bytes": 99315,
+   "delve": "c0f867e1d0fc1f8bdab6efff4b5ed16804965a915e468188e73727752085a13f",
+   "id": "c04563c0df1a366238e23a1af73ec60f3a986c21ec10b874d48cf29267cdac74",
+   "place": "5ccd2b9a0f1ec80bda6bb796275a7559a48582cf93da523306ae3c150e2818df",
+   "players": 4,
+   "title": "Test Level"
+  }
+ ]
+}
