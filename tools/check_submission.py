@@ -35,9 +35,12 @@ BASE, VALIDATE, KIT = sys.argv[1], sys.argv[2], sys.argv[3]
 # anything that needs ownership is refused rather than assumed.
 LOGIN = (sys.argv[4] if len(sys.argv) > 4 else "").strip()
 
-ALLOWED_FILES = {"map.delve", "map.placements", "thumb.jpg"}
+ALLOWED_FILES = {"map.delve", "map.placements", "thumb.bc1"}
 MAX_MAP_BYTES = 4 * 1024 * 1024
-MAX_THUMB = 512 * 1024
+# One fixed length, always: 8 bytes of magic plus 18432 of BC1. A file that
+# is any other size is not one of our thumbnails. See omd1_thumbfmt.h for
+# why the format has no header to lie about and no decoder to attack.
+THUMB_BYTES = 8 + (256 // 4) * (144 // 4) * 8
 problems = []
 
 
@@ -169,13 +172,14 @@ if "add" in kinds:
         if hashlib.sha256((d_sha + p_sha).encode("ascii")).hexdigest() != mid:
             bad("maps/%s is not named after what is in it" % mid[:16])
 
-        thumb = os.path.join(folder, "thumb.jpg")
+        thumb = os.path.join(folder, "thumb.bc1")
         if os.path.isfile(thumb):
-            if os.path.getsize(thumb) > MAX_THUMB:
-                bad("maps/%s: the thumbnail is over 512 KB" % mid[:16])
+            if os.path.getsize(thumb) != THUMB_BYTES:
+                bad("maps/%s: a thumbnail is exactly %d bytes, that one is %d"
+                    % (mid[:16], THUMB_BYTES, os.path.getsize(thumb)))
             with open(thumb, "rb") as f:
-                if f.read(3) != b"\xff\xd8\xff":
-                    bad("maps/%s: the thumbnail is not a JPEG" % mid[:16])
+                if f.read(8) != b"OMD2THM1":
+                    bad("maps/%s: the thumbnail is not one of ours" % mid[:16])
             if row.get("thumb") and row["thumb"] != sha256(thumb):
                 bad("maps/%s: the thumbnail is not the file the row names" % mid[:16])
         elif row.get("thumb"):
