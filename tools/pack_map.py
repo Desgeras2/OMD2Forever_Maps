@@ -18,10 +18,11 @@
 # integrity check at the same time. Editing a map produces a new id, which is
 # correct: it is a different map.
 #
-# WHAT IS NOT COPIED, AND WHY. Only the .delve and the .placements go. The
-# .navcache is a derived file this machine built and the next machine will
-# build for itself; the .rooms, .sky and .waves are editor state. None of them
-# is needed to play, and every file that travels is a file someone has to trust.
+# WHAT IS NOT COPIED, AND WHY. The .delve, .placements and .waves go, and
+# the .thumb.bc1 if there is one. The .navcache is a derived file this
+# machine built and the next machine will build for itself; the .rooms and
+# .sky are editor state. Every file that travels is a file someone has to
+# trust, so the ones that do not need to travel do not.
 #
 #   python pack_map.py "North Wing 2" --author Desgeras --title "North Wing"
 #
@@ -29,7 +30,7 @@
 #   --repo <dir>     the checkout of OMD2Forever_Maps (default: ./maprepo)
 #   --cache <dir>    where the editor saves levels
 #   --validate <exe> the built validate_cli
-#   --thumb <file>   a .jpg screenshot
+#   --thumb <file>   a .thumb.bc1 (found beside the level if not given)
 #   --players <n>    how many it is built for (default 4)
 
 import argparse, hashlib, io, json, os, re, shutil, subprocess, sys
@@ -61,6 +62,11 @@ a = ap.parse_args()
 src = os.path.join(a.cache, a.level)
 delve = os.path.join(src, a.level + ".delve")
 place = os.path.join(src, a.level + ".placements")
+# The waves travel too, when the level has them: without them a shared map
+# plays with somebody else's schedule, which is not the map its author made.
+waves = os.path.join(src, a.level + ".waves")
+if not os.path.isfile(waves):
+    waves = None
 for p in (delve, place):
     if not os.path.isfile(p):
         die("no such file: " + p)
@@ -72,7 +78,7 @@ if not os.path.isfile(kit):
 # ---- 1. THE REAL VALIDATOR, NOT AN IMITATION OF IT --------------------------
 if not os.path.isfile(a.validate):
     die("no validator at %s - build tools/validate_cli.cpp first" % a.validate)
-r = subprocess.run([a.validate, delve, place, kit],
+r = subprocess.run([a.validate, delve, place, kit] + ([waves] if waves else []),
                    capture_output=True, text=True)
 print((r.stdout or "").strip())
 if r.returncode != 0:
@@ -83,7 +89,12 @@ d_sha = sha256_file(delve)
 p_sha = sha256_file(place)
 # The map's own id: the two files together, in a fixed order, so the same map
 # always lands in the same folder no matter who packs it.
-map_id = hashlib.sha256((d_sha + p_sha).encode("ascii")).hexdigest()
+# THE ID RULE, the same in the packer, the repository's check and the game:
+# without waves it is the hash of the two hashes (so the map already published
+# keeps its folder); with waves the wave hash goes in too, or two maps that
+# differ only in their waves would share a folder.
+w_sha = sha256_file(waves) if waves else None
+map_id = hashlib.sha256((d_sha + p_sha + (w_sha or "")).encode("ascii")).hexdigest()
 
 # ---- a title we are willing to publish --------------------------------------
 title = a.title
@@ -112,6 +123,8 @@ dst = os.path.join(a.repo, "maps", map_id)
 os.makedirs(dst, exist_ok=True)
 shutil.copyfile(delve, os.path.join(dst, "map.delve"))
 shutil.copyfile(place, os.path.join(dst, "map.placements"))
+if waves:
+    shutil.copyfile(waves, os.path.join(dst, "map.waves"))
 
 entry = {
     "id": map_id,
@@ -123,16 +136,51 @@ entry = {
     "place": p_sha,
 }
 
+# ---- what the waves say, for the card and the detail page ------------------
+def kit_flag(name):
+    for ln in io.open(kit, encoding="utf-8"):
+        if ln.startswith("#%s=" % name):
+            v = ln.split("=", 1)[1].strip()
+            return set(int(x) for x in v.split(",") if x.strip())
+    return set()
+
+if waves:
+    fly, sap = kit_flag("flyers"), kit_flag("sappers")
+    gold = par = count = 0
+    has_fly = has_sap = 0
+    for ln in io.open(waves, encoding="utf-8"):
+        ln = ln.strip()
+        if ln.startswith("gold="): gold = int(ln[5:])
+        elif ln.startswith("par="): par = int(ln[4:])
+        elif ln.startswith("wavex="):
+            count += 1
+            parts = ln[6:].split("|")
+            for pair in parts[4:]:
+                mob, _, n = pair.partition(",")
+                if n and int(n) > 0:
+                    if int(mob) in fly: has_fly = 1
+                    if int(mob) in sap: has_sap = 1
+    entry.update({"waves": w_sha, "gold": gold, "par": par,
+                  "wavecount": count, "flyers": has_fly, "sappers": has_sap})
+
+# THE THUMBNAIL IS ONE FIXED LENGTH OR IT IS NOT A THUMBNAIL. See
+# omd1_thumbfmt.h: 8 bytes of magic and 18432 bytes of BC1, always, so there
+# is no header to lie about and no decoder to attack.
+THUMB_BYTES = 8 + (256 // 4) * (144 // 4) * 8
+if not a.thumb:
+    guess = os.path.join(src, a.level + ".thumb.bc1")
+    if os.path.isfile(guess):
+        a.thumb = guess
 if a.thumb:
     if not os.path.isfile(a.thumb):
         die("no such thumbnail: " + a.thumb)
-    if os.path.getsize(a.thumb) > 512 * 1024:
-        die("that thumbnail is too big - keep it under 512 KB")
+    if os.path.getsize(a.thumb) != THUMB_BYTES:
+        die("that thumbnail is %d bytes; it has to be exactly %d"
+            % (os.path.getsize(a.thumb), THUMB_BYTES))
     with open(a.thumb, "rb") as f:
-        head = f.read(3)
-    if head != b"\xff\xd8\xff":
-        die("the thumbnail must be a JPEG")
-    shutil.copyfile(a.thumb, os.path.join(dst, "thumb.jpg"))
+        if f.read(8) != b"OMD2THM1":
+            die("that file is not one of our thumbnails")
+    shutil.copyfile(a.thumb, os.path.join(dst, "thumb.bc1"))
     entry["thumb"] = sha256_file(a.thumb)
 
 idx_path = os.path.join(a.repo, "index.json")

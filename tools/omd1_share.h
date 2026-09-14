@@ -239,6 +239,141 @@ static void ShareCheckPlacements(const char* buf, size_t len,
     if (placements == 0) { ShareSay(r, 0, "the map has no placements in it"); return; }
 }
 
+
+// ---------------------------------------------------------------------------
+// THE WAVE FILE
+// ---------------------------------------------------------------------------
+//
+//   # comment
+//   rift=25          gold=4000        par=270
+//   sunlight=100     ambient=100      skytint=35
+//   wavex=<door>|<gap>|<bonus>|<n>|<mob>,<count>|<mob>,<count>|...
+//
+// A MONSTER IS AN INDEX, NOT A NAME. There is no string here to allowlist, only
+// a number to bound against the table this install has - which is the safest
+// shape a reference can take. The placements file is the opposite, and that is
+// exactly why it needed a whole allowlist to make up for it.
+//
+// Unknown lines are refused rather than skipped. A wave file is short and
+// entirely ours; a line we do not recognise means it is not the file we think
+// it is, and guessing is the bug.
+enum {
+    kShareMaxWaves    = 24,     // the editor's own ceiling
+    kShareMaxKinds    = 8,      // monsters mixed in one wave
+    kShareMaxCount    = 5000,   // of one monster, in one wave
+    kShareMaxGold     = 1000000,
+    kShareMaxPar      = 100000
+};
+
+static int ShareKeyNum(const char* L, size_t n, const char* key,
+                       int lo, int hi, int* out, int* matched) {
+    *matched = 0;
+    const size_t k = strlen(key);
+    if (n < k + 1 || memcmp(L, key, k) != 0 || L[k] != '=') return 1;
+    *matched = 1;
+    return ShareInt(L + k + 1, n - k - 1, lo, hi, out);
+}
+
+// `mobs` is how many monsters this install knows about. A file that names one
+// past the end is refused rather than clamped: clamping turns somebody's boss
+// wave into a different wave and calls it success.
+static void ShareCheckWaves(const char* buf, size_t len, int mobs, ShareResult* r) {
+    r->ok = 1; r->line = 0; r->why[0] = 0;
+
+    if (!buf) { ShareSay(r, 0, "the wave file is missing"); return; }
+    if (len > kShareMaxBytes) { ShareSay(r, 0, "the wave file is too big"); return; }
+    if (mobs <= 0) { ShareSay(r, 0, "this install has no monster list to check against"); return; }
+
+    size_t i = 0;
+    int lineNo = 0, waves = 0;
+    while (i < len) {
+        if (++lineNo > kShareMaxLines) { ShareSay(r, lineNo, "too many lines"); return; }
+        size_t e = i;
+        while (e < len && buf[e] != '\n' && buf[e] != '\r') ++e;
+        const size_t lineLen = e - i;
+        if (lineLen > kShareMaxLineLen) { ShareSay(r, lineNo, "a line is too long"); return; }
+        const char* L = buf + i;
+
+        size_t next = e;
+        if (next < len && buf[next] == '\r') ++next;
+        if (next < len && buf[next] == '\n') ++next;
+        if (next == i) ++next;
+        i = next;
+
+        if (lineLen == 0 || L[0] == '#') continue;
+
+        for (size_t k = 0; k < lineLen; ++k) {
+            const unsigned char c = (unsigned char)L[k];
+            if (c < 0x20 || c > 0x7E) { ShareSay(r, lineNo, "a line has bytes that are not text"); return; }
+        }
+
+        int v = 0, hit = 0;
+        static const struct { const char* key; int lo, hi; } kKeys[] = {
+            { "rift",     0, 100000 },
+            { "gold",     0, kShareMaxGold },
+            { "par",      0, kShareMaxPar },
+            { "sunlight", 0, 10000 },
+            { "ambient",  0, 10000 },
+            { "skytint",  0, 10000 },
+        };
+        int known = 0;
+        for (int k = 0; k < 6 && !known; ++k) {
+            if (!ShareKeyNum(L, lineLen, kKeys[k].key, kKeys[k].lo, kKeys[k].hi, &v, &hit)) {
+                char why[80];
+                size_t w = 0;
+                const char* a = kKeys[k].key;
+                while (*a) why[w++] = *a++;
+                const char* b = " is not a number in range";
+                while (*b) why[w++] = *b++;
+                why[w] = 0;
+                ShareSay(r, lineNo, why);
+                return;
+            }
+            if (hit) known = 1;
+        }
+        if (known) continue;
+
+        if (lineLen > 6 && memcmp(L, "wavex=", 6) == 0) {
+            if (++waves > kShareMaxWaves) { ShareSay(r, lineNo, "too many waves"); return; }
+            const char* f[4 + kShareMaxKinds * 2];
+            size_t fn[4 + kShareMaxKinds * 2];
+            int nf = 0;
+            size_t st = 6;
+            for (size_t k = 6; k <= lineLen; ++k) {
+                if (k == lineLen || L[k] == '|' || L[k] == ',') {
+                    if (nf >= (int)(sizeof(f) / sizeof(f[0]))) { ShareSay(r, lineNo, "too many fields in a wave"); return; }
+                    f[nf] = L + st; fn[nf] = k - st; ++nf;
+                    st = k + 1;
+                }
+            }
+            if (nf < 6) { ShareSay(r, lineNo, "a wave needs a door, a gap, a bonus, a count and at least one monster"); return; }
+            int door, gap, bonus, kinds;
+            if (!ShareInt(f[0], fn[0], -1, 4096, &door))            { ShareSay(r, lineNo, "the door is out of range"); return; }
+            if (!ShareInt(f[1], fn[1], -1, 100000, &gap))           { ShareSay(r, lineNo, "the gap is out of range"); return; }
+            if (!ShareInt(f[2], fn[2], 0, kShareMaxGold, &bonus))   { ShareSay(r, lineNo, "the bonus is out of range"); return; }
+            if (!ShareInt(f[3], fn[3], 1, kShareMaxKinds, &kinds))  { ShareSay(r, lineNo, "a wave mixes 1 to 8 kinds"); return; }
+            if (nf != 4 + kinds * 2) { ShareSay(r, lineNo, "the wave says one number of monsters and lists another"); return; }
+            for (int k = 0; k < kinds; ++k) {
+                int mob, cnt;
+                // THE ONLY REFERENCE IN THE WHOLE FORMAT, and it is a number
+                // bounded by this install's own table.
+                if (!ShareInt(f[4 + k * 2], fn[4 + k * 2], 0, mobs - 1, &mob)) {
+                    ShareSay(r, lineNo, "this map uses a monster this install does not have"); return;
+                }
+                if (!ShareInt(f[5 + k * 2], fn[5 + k * 2], 0, kShareMaxCount, &cnt)) {
+                    ShareSay(r, lineNo, "a monster count is out of range"); return;
+                }
+            }
+            continue;
+        }
+
+        ShareSay(r, lineNo, "this is not a line a wave file has in it");
+        return;
+    }
+
+    if (waves == 0) { ShareSay(r, 0, "the map has no waves in it"); return; }
+}
+
 // ---------------------------------------------------------------------------
 // THE DELVE
 // ---------------------------------------------------------------------------
@@ -395,9 +530,18 @@ struct ShareEntry {
     char id[kShareIdLen + 1];
     char title[64];
     char author[48];
+    // Written by the repository's workflow, never by a submitter: see
+    // tools/apply_submission.py. The client reads them and nothing else.
+    char submitter[40];     // the GitHub login that published it - OWNERSHIP
+    int  up, down;          // the tally, recounted from votes/ on every change
     char delveSha[kShareIdLen + 1];
     char placeSha[kShareIdLen + 1];
     char thumbSha[kShareIdLen + 1];
+    char wavesSha[kShareIdLen + 1];   // empty for a map published before waves travelled
+    // What the waves say, copied into the row at publish time so a card and a
+    // detail page can show them without downloading anything. Informational
+    // only: the file itself is what gets validated and installed.
+    int  gold, par, waveCount, flyers, sappers;
     int  players;
     int  bytes;
 };
@@ -575,7 +719,16 @@ static int ShareParseIndex(const char* b, size_t n, ShareEntry* out, int maxOut,
                 else if (ShareKeyIs(k, "delve"))   okv = ShareStr(b, n, &i, e.delveSha, sizeof(e.delveSha));
                 else if (ShareKeyIs(k, "place"))   okv = ShareStr(b, n, &i, e.placeSha, sizeof(e.placeSha));
                 else if (ShareKeyIs(k, "thumb"))   okv = ShareStr(b, n, &i, e.thumbSha, sizeof(e.thumbSha));
+                else if (ShareKeyIs(k, "waves"))   okv = ShareStr(b, n, &i, e.wavesSha, sizeof(e.wavesSha));
+                else if (ShareKeyIs(k, "gold"))    okv = ShareNum(b, n, &i, 0, kShareMaxGold, &e.gold);
+                else if (ShareKeyIs(k, "par"))     okv = ShareNum(b, n, &i, 0, kShareMaxPar, &e.par);
+                else if (ShareKeyIs(k, "wavecount")) okv = ShareNum(b, n, &i, 0, kShareMaxWaves, &e.waveCount);
+                else if (ShareKeyIs(k, "flyers"))  okv = ShareNum(b, n, &i, 0, 1, &e.flyers);
+                else if (ShareKeyIs(k, "sappers")) okv = ShareNum(b, n, &i, 0, 1, &e.sappers);
                 else if (ShareKeyIs(k, "players")) okv = ShareNum(b, n, &i, 1, 16, &e.players);
+                else if (ShareKeyIs(k, "submitter")) okv = ShareStr(b, n, &i, e.submitter, sizeof(e.submitter));
+                else if (ShareKeyIs(k, "up"))      okv = ShareNum(b, n, &i, 0, 1000000, &e.up);
+                else if (ShareKeyIs(k, "down"))    okv = ShareNum(b, n, &i, 0, 1000000, &e.down);
                 else if (ShareKeyIs(k, "bytes"))   okv = ShareNum(b, n, &i, 0, kShareMaxBytes, &e.bytes);
                 else                               okv = ShareSkipValue(b, n, &i, 0);
                 if (!okv) { ShareSay(r, 0, "a map field is not the shape this format allows"); return -1; }
@@ -588,6 +741,7 @@ static int ShareParseIndex(const char* b, size_t n, ShareEntry* out, int maxOut,
             if (!ShareIsHex64(e.delveSha)) { ShareSay(r, 0, "a delve hash is not a 64-character hash"); return -1; }
             if (!ShareIsHex64(e.placeSha)) { ShareSay(r, 0, "a placements hash is not a 64-character hash"); return -1; }
             if (e.thumbSha[0] && !ShareIsHex64(e.thumbSha)) { ShareSay(r, 0, "a thumbnail hash is not a 64-character hash"); return -1; }
+            if (e.wavesSha[0] && !ShareIsHex64(e.wavesSha)) { ShareSay(r, 0, "a waves hash is not a 64-character hash"); return -1; }
             char clean[64];
             if (!ShareCleanTitle(e.title, strlen(e.title), clean, sizeof(clean))) { ShareSay(r, 0, "a map has no usable title"); return -1; }
             memcpy(e.title, clean, sizeof(e.title) < sizeof(clean) ? sizeof(e.title) : sizeof(clean));

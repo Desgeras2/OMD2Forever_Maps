@@ -27,6 +27,7 @@
 // ---- the allowlist, loaded from the generated list -------------------------
 static char** g_kit = 0;
 static int    g_kitN = 0;
+static int    g_mobs = 0;      // from the "#mobs=N" line the generator writes
 
 static int EqNoCase(const char* a, const char* b) {
     for (;; ++a, ++b) {
@@ -96,7 +97,9 @@ static int LoadKit(const char* path) {
         if (e > i) {
             size_t len = e - i;
             while (len && (b[i + len - 1] == ' ' || b[i + len - 1] == '\t')) --len;
-            if (len && b[i] != '#') {
+            if (len > 6 && memcmp(b + i, "#mobs=", 6) == 0) {
+                g_mobs = atoi(b + i + 6);
+            } else if (len && b[i] != '#') {
                 if (g_kitN == cap) { cap *= 2; g_kit = (char**)realloc(g_kit, sizeof(char*) * cap); }
                 char* s = (char*)malloc(len + 1);
                 memcpy(s, b + i, len);
@@ -112,8 +115,8 @@ static int LoadKit(const char* path) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 4) {
-        printf("usage: validate <map.delve> <map.placements> <kit_paths.txt>\n");
+    if (argc != 4 && argc != 5) {
+        printf("usage: validate <map.delve> <map.placements> <kit_paths.txt> [map.waves]\n");
         return 2;
     }
     if (!LoadKit(argv[3])) { printf("could not read the kit list: %s\n", argv[3]); return 2; }
@@ -131,6 +134,15 @@ int main(int argc, char** argv) {
     ShareCheckPlacements(p, pn, KnownPath, &r);
     if (!r.ok) { printf("placements refused: line %d: %s\n", r.line, r.why); return 1; }
 
-    printf("ok: %s and %s pass, against %d known pieces\n", argv[1], argv[2], g_kitN);
+    if (argc == 5) {
+        size_t wn = 0;
+        char* w = SlurpFile(argv[4], &wn);
+        if (!w) { printf("could not read %s\n", argv[4]); return 2; }
+        if (g_mobs <= 0) { printf("the kit list has no monster count - regenerate it\n"); return 2; }
+        ShareCheckWaves(w, wn, g_mobs, &r);
+        if (!r.ok) { printf("waves refused: line %d: %s\n", r.line, r.why); return 1; }
+    }
+
+    printf("ok: the map passes, against %d known pieces and %d monsters\n", g_kitN, g_mobs);
     return 0;
 }
