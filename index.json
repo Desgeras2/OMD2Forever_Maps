@@ -3,6 +3,18 @@
  "maps": [
   {
    "author": "Desgeras",
+   "bytes": 37924,
+   "delve": "be89f77f16a8803e634c5fe99afd375c3356640268d361676080270bf1c1fe50",
+   "down": 0,
+   "id": "8004a7b93f0152525eba84cfa8657676f929fde891a8989a891868f7c4d9b21e",
+   "place": "18c4f68a22c71384db59290334e2a73c4f3fc717063f6227e0742ba4042a41b2",
+   "players": 4,
+   "submitter": "kd31f1470eab7af68beb7294e1a36a00e",
+   "title": "es level",
+   "up": 0
+  },
+  {
+   "author": "Desgeras",
    "bytes": 99243,
    "delve": "a6f75172a0cb6d2c3362321d4e9aafea50eee870d163973a695e532e227a7763",
    "down": 0,
