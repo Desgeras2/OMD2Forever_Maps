@@ -85,6 +85,9 @@ jobs:
           git diff --name-status "$BASE_SHA...$HEAD_SHA" \
             | awk '$1=="D"{print $2}' | while read -r f; do rm -f "$f"; done
           find maps votes -type d -empty -delete 2>/dev/null || true
+          # STAGE IT. The check reads the index, because that is where the
+          # proposed end state lives until it is accepted.
+          git add -A index.json maps votes
 
       - name: check it
         env:
@@ -119,8 +122,10 @@ jobs:
         env:
           WHO: ${{ steps.who.outputs.who }}
         run: |
-          git checkout -- . || true
-          git clean -fd || true
+          # Throw the submission away first. This step pushes to main, and it
+          # must push a refusal note and nothing else.
+          git reset -q --hard HEAD || true
+          git clean -fdq || true
           mkdir -p refused
           head -c 4000 /tmp/why.txt > "refused/$WHO.txt" || echo "no reason recorded" > "refused/$WHO.txt"
           git config user.name  "omd2forever-bot"

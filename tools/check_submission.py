@@ -102,7 +102,11 @@ def load_index(ref=None):
 
 
 # ---- what the diff touches --------------------------------------------------
-changed = [l for l in git("diff", "--name-status", BASE + "...HEAD").splitlines()
+# THE STAGED TREE, NOT A COMMIT. A submission is never committed before it is
+# checked: the workflow checks out main and stages the submitted files over it,
+# so the proposal only exists in the index. Comparing commits here compared
+# main with main and found nothing at all.
+changed = [l for l in git("diff", "--cached", "--name-status", BASE).splitlines()
            if l.strip()]
 
 added_maps, removed_maps, votes = set(), set(), []
