@@ -1,0 +1,113 @@
+# A submission that came through the Worker, as a pushed branch.
+#
+# ---------------------------------------------------------------------------
+# WHY A BRANCH AND NOT A PULL REQUEST
+# ---------------------------------------------------------------------------
+#
+# Both say the same thing - "here is a proposed end state" - but a branch needs
+# one permission where a pull request needs two, and the fewer things the
+# Worker's key is allowed to do, the less there is to lose if it leaks. Nothing
+# else changes: this workflow checks the branch against main with the same
+# scripts and the same validator, and writes the result to main itself.
+#
+# WHO SUBMITTED IT is the branch name: k plus 32 hex, the fingerprint of a key
+# the player's game made and keeps. That is trustworthy here for exactly one
+# reason - a branch in this repository can only be pushed by the Worker's key,
+# and the Worker checks the key before it pushes anything. Submissions from a
+# fork are pull requests and keep being identified by their GitHub login; see
+# submission.yml.
+#
+# NOTHING FROM THE BRANCH IS EVER RUN. The validator and both scripts come from
+# main, and only data files are taken from the branch.
+
+name: submitted
+
+on:
+  push:
+    branches:
+      - 'k*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: submission            # one writer to main at a time, ever
+  cancel-in-progress: false
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out this repository (not the submission)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: work out who is asking
+        id: who
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          WHO=$(printf '%s' "$BRANCH" | sed -n 's/^\(k[0-9a-f]\{32\}\)-.*$/\1/p')
+          if [ -z "$WHO" ]; then
+            echo "::error::a branch here is named k<32 hex>-<kind>-<stamp>"
+            exit 1
+          fi
+          echo "who=$WHO" >> "$GITHUB_OUTPUT"
+          echo "this submission is from $WHO"
+
+      - name: build the validator from OUR sources
+        run: |
+          g++ -O2 -Wall -o /tmp/validate tools/validate_cli.cpp -Itools
+          test -f kit_paths.txt
+          cp tools/check_submission.py tools/apply_submission.py /tmp/
+
+      - name: take the submission's data files, and nothing else
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # The checkout brought main only, so the pushed commit has to be
+          # fetched before anything can be compared against it.
+          git fetch --no-tags --depth=50 origin "$HEAD_SHA"
+          BASE_SHA=$(git rev-parse main)
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" \
+               | grep -vE '^(index\.json|maps/|votes/)' ; then
+            echo "::error::a submission may only touch index.json, maps/ and votes/"
+            exit 1
+          fi
+          git checkout "$HEAD_SHA" -- index.json 2>/dev/null || true
+          git checkout "$HEAD_SHA" -- maps       2>/dev/null || true
+          git checkout "$HEAD_SHA" -- votes      2>/dev/null || true
+          # A deletion is not carried by `git checkout -- path`, so apply the
+          # removals explicitly rather than silently ignoring them.
+          git diff --name-status "$BASE_SHA...$HEAD_SHA" \
+            | awk '$1=="D"{print $2}' | while read -r f; do rm -f "$f"; done
+          find maps votes -type d -empty -delete 2>/dev/null || true
+
+      - name: check it
+        env:
+          WHO: ${{ steps.who.outputs.who }}
+        run: python3 /tmp/check_submission.py "$BASE_SHA" /tmp/validate kit_paths.txt "$WHO"
+
+      - name: stamp the owner, recount the votes, and write it to main
+        env:
+          WHO: ${{ steps.who.outputs.who }}
+        run: |
+          python3 /tmp/apply_submission.py "$WHO"
+          git config user.name  "omd2forever-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -A index.json maps votes
+          if git diff --cached --quiet; then
+            echo "nothing to write"
+          else
+            git commit -m "submission from $WHO"
+            git push origin HEAD:main
+          fi
+
+      - name: tidy the branch away, accepted or not
+        if: always()
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: git push origin --delete "$BRANCH" || true
