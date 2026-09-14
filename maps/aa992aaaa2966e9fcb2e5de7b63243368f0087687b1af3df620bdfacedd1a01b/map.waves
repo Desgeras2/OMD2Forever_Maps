@@ -1,0 +1,11 @@
+# omd1_maps map settings and wave schedule for "North Wing 2"
+rift=25
+gold=4000
+par=270
+sunlight=100
+ambient=100
+skytint=35
+wavex=-1|-1|1500|2|0,16|4,0
+wavex=-1|12|500|2|0,24|4,0
+wavex=-1|12|500|2|0,21|1,11
+wavex=-1|12|500|2|0,22|1,29
