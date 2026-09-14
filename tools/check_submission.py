@@ -19,6 +19,10 @@
 #           that map may do it.
 #   VOTE    adds or replaces votes/<id>/<login>, and <login> must be the person
 #           opening the pull request.
+#   RENAME  changes the title of one row and nothing else, and only the person
+#           who submitted that map may do it. A title is the only part of a
+#           published row worth editing: everything else is content, and
+#           content gets a new id instead.
 #
 # Mixing them is refused. A pull request that adds a map AND deletes someone
 # else's is not a submission, it is two things wearing one coat, and the second
@@ -144,7 +148,12 @@ for line in changed:
 
     bad("a submission may only touch index.json, maps/<id>/ and votes/<id>/: %s" % path)
 
-kinds = [k for k, on in (("add", added_maps), ("delete", removed_maps), ("vote", votes)) if on]
+# A submission that touches index.json and nothing else is a rename - there is
+# nothing else it could be.
+renames = touched_index and not added_maps and not removed_maps and not votes
+
+kinds = [k for k, on in (("add", added_maps), ("delete", removed_maps),
+                         ("vote", votes), ("rename", renames)) if on]
 if len(kinds) > 1:
     bad("one pull request does one thing: this one is %s" % " and ".join(kinds))
 if not kinds:
@@ -309,6 +318,40 @@ if "vote" in kinds:
             bad("%s must contain exactly 'up' or 'down'" % path)
         if os.path.getsize(path) > 16:
             bad("%s is longer than a vote" % path)
+
+# ---- RENAME -----------------------------------------------------------------
+if "rename" in kinds:
+    if not LOGIN:
+        bad("a rename has to be able to prove who is asking, and this one cannot")
+    changed_rows = [mid for mid in old_rows
+                    if mid not in rows or rows[mid] != old_rows[mid]]
+    for mid in sorted(rows):
+        if mid not in old_rows:
+            bad("row %s is new; a rename does not add a map" % mid[:16])
+    if len(changed_rows) != 1:
+        bad("a rename changes one row, and this one changes %d" % len(changed_rows))
+    for mid in changed_rows:
+        was, now = old_rows[mid], rows.get(mid)
+        if not now:
+            bad("row %s was removed; a rename does not remove" % mid[:16])
+            continue
+        # ONLY the title. Every other field is compared exactly, including the
+        # tally and the submitter - neither of which is a submitter's to write.
+        for key in set(list(was.keys()) + list(now.keys())):
+            if key == "title":
+                continue
+            if was.get(key) != now.get(key):
+                bad("row %s: a rename may not change %s" % (mid[:16], key))
+        owner = was.get("submitter", "")
+        if not owner:
+            bad("maps/%s has no recorded submitter, so nobody can rename it" % mid[:16])
+        elif owner.lower() != LOGIN.lower():
+            bad("maps/%s was submitted by someone else" % mid[:16])
+        title = now.get("title", "")
+        if not isinstance(title, str) or not title.strip():
+            bad("a map needs a title")
+        elif len(title) > 63 or any(ord(c) < 32 or ord(c) > 126 for c in title):
+            bad("that title is too long or not plain text")
 
 # ---- the verdict ------------------------------------------------------------
 if problems:
