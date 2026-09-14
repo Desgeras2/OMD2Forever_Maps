@@ -89,7 +89,12 @@ jobs:
       - name: check it
         env:
           WHO: ${{ steps.who.outputs.who }}
-        run: python3 /tmp/check_submission.py "$BASE_SHA" /tmp/validate kit_paths.txt "$WHO"
+        run: |
+          set +e
+          python3 /tmp/check_submission.py "$BASE_SHA" /tmp/validate kit_paths.txt "$WHO"             > /tmp/why.txt 2>&1
+          echo $? > /tmp/rc.txt
+          cat /tmp/why.txt
+          exit $(cat /tmp/rc.txt)
 
       - name: stamp the owner, recount the votes, and write it to main
         env:
@@ -105,6 +110,24 @@ jobs:
             git commit -m "submission from $WHO"
             git push origin HEAD:main
           fi
+
+      # WHY IT WAS REFUSED, WHERE IT CAN BE READ. The run log needs admin
+      # rights; this does not, and it is the same text. One short file per
+      # refusal, named after who asked, replaced by their next attempt.
+      - name: write down why not
+        if: failure()
+        env:
+          WHO: ${{ steps.who.outputs.who }}
+        run: |
+          git checkout -- . || true
+          git clean -fd || true
+          mkdir -p refused
+          head -c 4000 /tmp/why.txt > "refused/$WHO.txt" || echo "no reason recorded" > "refused/$WHO.txt"
+          git config user.name  "omd2forever-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -A refused
+          git commit -q -m "refused a submission from $WHO" || true
+          git push origin HEAD:main || true
 
       - name: tidy the branch away, accepted or not
         if: always()
