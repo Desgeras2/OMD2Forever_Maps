@@ -106,6 +106,10 @@ jobs:
           WHO: ${{ steps.who.outputs.who }}
         run: |
           python3 /tmp/apply_submission.py "$WHO"
+          # An old refusal note is about a submission that has since been
+          # replaced by one that passed. Take it away with the same commit.
+          rm -f "refused/$WHO.txt"
+          git add -A refused 2>/dev/null || true
           git config user.name  "omd2forever-bot"
           git config user.email "bot@users.noreply.github.com"
           # One at a time and forgiving: votes/ does not exist until somebody
