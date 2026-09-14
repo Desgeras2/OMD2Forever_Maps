@@ -82,7 +82,9 @@ jobs:
           find maps votes -type d -empty -delete 2>/dev/null || true
           # STAGE IT. The check reads the index, because that is where the
           # proposed end state lives until it is accepted.
-          git add -A index.json maps votes
+          # One at a time and forgiving: votes/ does not exist until somebody
+          # votes, and `git add` treats a missing path as a fatal error.
+          for p in index.json maps votes; do git add -A "$p" 2>/dev/null || true; done
 
       - name: work out who is asking
         id: who
@@ -122,7 +124,9 @@ jobs:
           python3 /tmp/apply_submission.py "$WHO"
           git config user.name  "omd2forever-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add -A index.json maps votes
+          # One at a time and forgiving: votes/ does not exist until somebody
+          # votes, and `git add` treats a missing path as a fatal error.
+          for p in index.json maps votes; do git add -A "$p" 2>/dev/null || true; done
           if git diff --cached --quiet; then
             echo "nothing to write"
           else
