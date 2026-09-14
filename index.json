@@ -3,6 +3,25 @@
  "maps": [
   {
    "author": "Desgeras",
+   "bytes": 99243,
+   "delve": "a6f75172a0cb6d2c3362321d4e9aafea50eee870d163973a695e532e227a7763",
+   "down": 0,
+   "flyers": 0,
+   "gold": 4000,
+   "id": "13dd1a5d251cecb2395f6b269ba31314b6791eff8cd928b3077ad8810e49dba8",
+   "par": 270,
+   "place": "22cff107fabac644f0b98e329c00fab3c14f7199d9d2d275e873ce2ec5785832",
+   "players": 4,
+   "sappers": 0,
+   "submitter": "kbe72c23d7e4dc271ae1008da308f2849",
+   "thumb": "be4a7e606e5aa306d36d3179ab691423d6f042aed9be2ec7ab9d0d1cdc9876ae",
+   "title": "North Wing",
+   "up": 0,
+   "wavecount": 4,
+   "waves": "cb5b58e59d6c2798f86207f50f1d0b98b9fbf9c9f07f8cd76e7931d91e397077"
+  },
+  {
+   "author": "Desgeras",
    "bytes": 99315,
    "delve": "c0f867e1d0fc1f8bdab6efff4b5ed16804965a915e468188e73727752085a13f",
    "down": 0,
