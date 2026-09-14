@@ -1,4 +1,0 @@
-# omd1_maps placements for "New Level"
-# prefab path | x | y | z | yaw   (world units, 200 to a cell)
-art\castle\Floor\Ground4x4.vmesh|600|-3600|0|0|1
-art\castle\Floor\Ground4x4.vmesh|600|-4000|0|0|0
