@@ -1,4 +1,0 @@
-
-This submission was not accepted:
-
-  * maps/aa992aaaa2966e9f: usage: validate <map.delve> <map.placements> <kit_paths.txt>
