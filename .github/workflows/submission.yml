@@ -81,26 +81,49 @@ jobs:
             | awk '$1=="D"{print $2}' | while read -r f; do rm -f "$f"; done
           find maps votes -type d -empty -delete 2>/dev/null || true
 
+      - name: work out who is asking
+        id: who
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          HEAD_REF:  ${{ github.event.pull_request.head.ref }}
+          LOGIN:     ${{ github.event.pull_request.user.login }}
+        run: |
+          WHO="$LOGIN"
+          if [ "$HEAD_REPO" = "$BASE_REPO" ]; then
+            # A branch in THIS repository can only have been pushed by the
+            # Worker's token, so the identity it wrote into the name is as
+            # trustworthy as the Worker. A fork cannot push a branch here, so
+            # this can never be reached by a submission from outside.
+            WHO=$(printf '%s' "$HEAD_REF" | sed -n 's/^\(k[0-9a-f]\{32\}\)-.*$/\1/p')
+            if [ -z "$WHO" ]; then
+              echo "::error::a branch here is named k<32 hex>-<kind>-<stamp>"
+              exit 1
+            fi
+          fi
+          echo "who=$WHO" >> "$GITHUB_OUTPUT"
+          echo "this submission is from $WHO"
+
       - name: check it
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          LOGIN:    ${{ github.event.pull_request.user.login }}
-        run: python3 /tmp/check_submission.py "$BASE_SHA" /tmp/validate kit_paths.txt "$LOGIN"
+          WHO:      ${{ steps.who.outputs.who }}
+        run: python3 /tmp/check_submission.py "$BASE_SHA" /tmp/validate kit_paths.txt "$WHO"
 
       - name: stamp the owner, recount the votes, and write it to main
         env:
-          LOGIN: ${{ github.event.pull_request.user.login }}
+          WHO: ${{ steps.who.outputs.who }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          python3 /tmp/apply_submission.py "$LOGIN"
+          python3 /tmp/apply_submission.py "$WHO"
           git config user.name  "omd2forever-bot"
           git config user.email "bot@users.noreply.github.com"
           git add -A index.json maps votes
           if git diff --cached --quiet; then
             echo "nothing to write"
           else
-            git commit -m "submission from @$LOGIN (#$PR)"
+            git commit -m "submission from $WHO (#$PR)"
             git push origin HEAD:main
           fi
           gh pr comment "$PR" --body "Accepted and published. Nothing of this
